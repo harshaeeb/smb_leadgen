@@ -1,0 +1,30 @@
+{
+  "trades": [
+    "HVAC repair",
+    "Plumbing",
+    "Electrician",
+    "Roofing contractor",
+    "Garage door repair",
+    "Pest control",
+    "Foundation repair",
+    "Fence contractor",
+    "Tree service",
+    "Appliance repair",
+    "Locksmith",
+    "Pool service repair",
+    "Handyman",
+    "Landscaper",
+    "Lawn mowing",
+    "Concrete contractor"
+  ],
+  "petcare": [
+    "Dog grooming",
+    "Pet groomer",
+    "Mobile pet grooming",
+    "Dog walking",
+    "Dog walker",
+    "Pet walker",
+    "Dog training",
+    "Pet sitting"
+  ]
+}
