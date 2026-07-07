@@ -3,7 +3,8 @@
 Pulls a ranked, top-N batch of service-business leads with no website for a
 given city, state, and service type, and writes them into a Lead
 Tracker-formatted `.xlsx` file. Companion tool to
-`Dallas_No_Website_Lead_Generation_Strategy.md` — this script automates **Step 1
+[`docs/Dallas_No_Website_Lead_Generation_Strategy.md`](docs/Dallas_No_Website_Lead_Generation_Strategy.md) —
+this script automates **Step 1
 (sourcing + no-website filtering + ranking) only**. Owner name and email stay a
 manual step per that strategy doc (TDLR/TSBPE/county DBA/SOSDirect/Facebook),
 since none of those have a reliable public API to script against.
