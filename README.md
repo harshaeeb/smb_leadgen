@@ -1,33 +1,55 @@
-# leadgen — no-website lead sourcing tool
+# leadgen — no/weak-website lead sourcing tool
 
-Pulls a ranked, top-N batch of service-business leads with no website for a
-given city, state, and service type, and writes them into a Lead
-Tracker-formatted `.xlsx` file. Companion tool to
+Pulls a ranked, top-N batch of local service-business leads that have **no
+real professional web presence** — no website, only a social media page, a
+broken/unreachable website, or a website that fails basic professionalism
+checks — for a given city, state, and service type. Writes them into a Lead
+Tracker-formatted `.xlsx` file. Built for pitching a professional website +
+SEO + AI-search visibility + online booking (cal.com) package to small local
+service businesses.
+
+Companion tool to
 [`docs/Dallas_No_Website_Lead_Generation_Strategy.md`](docs/Dallas_No_Website_Lead_Generation_Strategy.md) —
-this script automates **Step 1
-(sourcing + no-website filtering + ranking) only**. Owner name and email stay a
-manual step per that strategy doc (TDLR/TSBPE/county DBA/SOSDirect/Facebook),
-since none of those have a reliable public API to script against.
+this script automates **Step 1 (sourcing + qualification + ranking) only**.
+Owner name and email stay a manual step per that strategy doc (TDLR/TSBPE/
+county DBA/SOSDirect/Facebook), since none of those have a reliable public
+API to script against.
 
 ## What it does
 
 1. For each service type you pass in (or each category in a preset from
    `categories.json`), runs a Google Places Text Search for
    `"<service> in <city>, <state>"`.
-2. Flags each result as **No Website**, **Social Only** (their Google listing's
-   "website" is actually a Facebook/Instagram/Linktree link), or **Has Website**
-   — only the first two get kept as leads.
-3. Optionally cross-checks Yelp for businesses Google didn't surface. Yelp's
-   API doesn't expose an external website field, so those get logged as
-   **Unknown — verify manually** rather than a confident no-website claim.
-4. Dedupes by phone number (or name if no phone), **ranks everything by
-   review count first and rating as a tie-breaker**, and keeps only the
-   top N (default 25) — the batch you're most likely to close, since these
-   are businesses with proven demand but no website.
-5. Writes the ranked batch to an `.xlsx` with a `Lead Tracker` tab (numbered
-   1–N by rank, matching your existing tracker's column order plus a few new
-   columns) and a `Search Summary` tab with per-category counts and how many
-   candidates were found beyond the batch limit.
+2. For every result that has a listed website, fetches that site once and
+   checks it for basic professionalism signals:
+   - Loads over HTTPS?
+   - On a custom domain, or a free page-builder subdomain (Wix, Weebly,
+     GoDaddy Sites, Squarespace's `square.site`, free WordPress.com, etc.)?
+   - Has a mobile viewport meta tag (i.e. isn't a desktop-only relic)?
+   - Has more than a token amount of real content on the homepage?
+
+   A site that passes all of those is **not a lead** — it already has a
+   reasonably professional presence. A site that fails one or more is a
+   **Tier 2 (Weak/Unprofessional Website)** lead, and the specific issues
+   found are listed in the output so you know what to pitch.
+3. A business with **no website at all**, only a **Facebook/Instagram page**,
+   or a website that's **unreachable/broken** when the script tries to load
+   it, is a **Tier 1** lead — the strongest prospects, since they have
+   effectively zero real web presence.
+4. Also checks whether the site (if any) has `schema.org`/structured-data
+   markup, as a rough signal of AI-search readiness (Google AI Overviews,
+   ChatGPT/Perplexity-style answer engines, etc.). This is reported as an
+   informational column for your pitch — it does not affect tier or ranking.
+5. Dedupes by phone number (or name if no phone), ranks **Tier 1 leads above
+   Tier 2 leads**, and within each tier:
+   - Tier 1: ranked by review count first, star rating as a tie-breaker.
+   - Tier 2: ranked by number of quality issues found (worst sites first),
+     then review count, then rating.
+   Keeps only the top N (default 25) — the batch you're most likely to
+   close.
+6. Writes the ranked batch to an `.xlsx` with a `Lead Tracker` tab (numbered
+   1–N by rank) and a `Search Summary` tab with per-category counts and how
+   many candidates were found beyond the batch limit.
 
 ## One-time setup
 
@@ -48,31 +70,26 @@ pip install -r requirements.txt
    fit inside the free credit for normal use.
 4. Create an API key, restrict it to Places API for safety.
 
-### 3. (Optional) Get a Yelp Fusion API key
-
-1. Go to [business.yelp.com/data/products/fusion](https://business.yelp.com/data/products/fusion/) and register an app.
-2. Free tier: 5,000 calls/day.
-3. Only adds businesses Google's search missed — skip this if you'd rather keep it simple; the script works fine without it (use `--no-yelp` or just don't set the key).
-
-### 4. Set your API key(s) as environment variables
+### 3. Set your API key as an environment variable
 
 Windows (PowerShell), each time before running (or add to your profile):
 
 ```powershell
 $env:GOOGLE_PLACES_API_KEY = "your-key-here"
-$env:YELP_API_KEY = "your-key-here"   # optional
 ```
 
 Mac/Linux (bash/zsh):
 
 ```bash
 export GOOGLE_PLACES_API_KEY="your-key-here"
-export YELP_API_KEY="your-key-here"   # optional
 ```
 
-(`.env.example` shows the two variable names — this script doesn't auto-load
-a `.env` file, so either export them in your shell or `pip install python-dotenv`
+(`.env.example` shows the variable name — this script doesn't auto-load a
+`.env` file, so either export it in your shell or `pip install python-dotenv`
 and add two lines to load it yourself if you'd prefer that route.)
+
+No other API key is required — the website-quality checks fetch each
+candidate's own site directly, with no third-party API involved.
 
 ## Running it
 
@@ -86,9 +103,10 @@ python leadgen.py "Plano" "TX" "electrician"
 python leadgen.py "McKinney" "TX" "handyman"
 ```
 
-Each of those is its own batch, capped at 25 leads (top reviews first) by
-default. Run it again with a different service or city for the next batch —
-one run, one focused list to work.
+Each of those is its own batch, capped at 25 leads (Tier 1 first, then Tier 2,
+each sorted internally as described above) by default. Run it again with a
+different service or city for the next batch — one run, one focused list to
+work.
 
 Other options:
 
@@ -102,25 +120,32 @@ python leadgen.py "Garland" "TX" "landscaper" --limit 10
 
 # Custom output filename
 python leadgen.py "Irving" "TX" "concrete worker" --output "Irving_concrete.xlsx"
-
-# Skip Yelp even if YELP_API_KEY is set
-python leadgen.py "Mesquite" "TX" "roofing contractor" --no-yelp
 ```
 
 Each run prints per-category result counts to the terminal and writes a new
 `.xlsx` named `Leads_<City>_<State>_<service>_<date>.xlsx` in the folder you
 run it from (unless you pass `--output`).
 
-## Ranking — how the top 25 get picked
+Note: checking each candidate's website adds a network request per lead with
+a listed site, so a run with a lot of Tier 2 candidates will take noticeably
+longer than a pure "no website" search did.
 
-Neither Google Places nor Yelp exposes a "popularity" or "views" metric, so
-the closest available proxy is used: **review count first, star rating as a
-tie-breaker**. That's a deliberate choice, not a limitation — a business with
-50 reviews and no website has demonstrated real customer demand and is
-actively losing potential customers to whoever shows up when people search
-for them online, which is exactly the strongest pitch for a custom site. A
-brand-new listing with 2 reviews is a weaker prospect right now even though
-it's just as "no website."
+## Tiers and ranking — how the top 25 get picked
+
+**Tier 1 — no real web presence** (highest priority): no website, social
+media page only (Facebook/Instagram/etc.), or a website that errored/timed
+out/404'd when fetched. Ranked by review count first, star rating as a
+tie-breaker — a business with proven customer demand and effectively no
+usable web presence is the strongest pitch.
+
+**Tier 2 — has a site, but it's weak**: the site loaded, but failed one or
+more of the professionalism checks (no HTTPS, free page-builder subdomain, no
+mobile viewport tag, thin content). Ranked by how many issues were found
+first (the worse the site, the higher it ranks within this tier), then
+review count, then rating.
+
+Tier 1 leads always sort above Tier 2 leads. A site that passes every check
+is not included at all — it's not a realistic lead for this pitch.
 
 The `Search Summary` tab tells you how many total candidates were found for
 the run and how many got cut by the `--limit`, so you can see if a service/city
@@ -142,11 +167,15 @@ preset (e.g. `"autorepair": [...]`) and call it with `--industry autorepair`.
   Fill those in using the free-first cascade in
   `Dallas_No_Website_Lead_Generation_Strategy.md` (Facebook → TDLR/TSBPE/TDA
   license lookup → county DBA search → SOSDirect).
-- Website Status flags "Social Only" leads separately from "No Website" —
-  both are valid outreach targets, but it's useful context for how you frame
-  the pitch on the call.
+- `Digital Presence Tier` and `Website Issues Found` tell you what's actually
+  wrong so you can tailor the pitch — "your Wix site isn't mobile-friendly and
+  has no booking system" lands differently than "you don't have a website at
+  all."
+- `AI Search Ready (schema.org)` is informational — a "No" here is a talking
+  point (their competitors may start showing up in AI answer engines and they
+  won't), not a qualification signal.
 - Copy/paste rows into your master financial-model Lead Tracker tab if you
-  want everything in one workbook — note the column order here has a few
+  want everything in one workbook — note the column order here has several
   extra columns inserted after "Source" compared to the original tracker, so
   either insert matching columns there first or paste by mapping headers
   rather than a raw block copy.
@@ -157,13 +186,14 @@ preset (e.g. `"autorepair": [...]`) and call it with `--industry autorepair`.
   TDLR, TSBPE, county clerk, and SOSDirect sites are form-based, several are
   CAPTCHA-protected, and scraping them isn't reliable or guaranteed to respect
   their terms of use, so that step is manual by design for now.
-- "No Website" reflects what's in the business's Google Business Profile —
-  it's Google's own website field, not an independent site crawl. It's the
-  same signal the manual Google Maps process already relies on, just pulled
-  via API instead of by hand.
+- Website-quality checks are cheap heuristics (HTTPS, free-builder domain,
+  viewport tag, word count), not a real audit — they're good enough to sort
+  leads into "worth pitching" vs. "already fine," not to write a detailed
+  SEO report. See `CLAUDE.md` for the decision to keep this free/heuristic
+  for now, and when it'd make sense to upgrade to a paid site-audit API.
 - Google Places Text Search returns at most ~60 results per query (3 pages of
   20) — this is a Google API limit, which is exactly why the existing strategy
   searches suburb-by-suburb (or ZIP-by-ZIP for Dallas proper) instead of
   city-wide for larger areas.
-- Ranking uses review count/rating as a proxy for "potential" since that's
-  what both APIs actually expose — see the Ranking section above.
+- No automated cross-run dedup — running the same city/service twice produces
+  two separate files with overlapping leads.
