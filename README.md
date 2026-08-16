@@ -3,10 +3,25 @@
 Pulls a ranked, top-N batch of local service-business leads that have **no
 real professional web presence** — no website, only a social media page, a
 broken/unreachable website, or a website that fails basic professionalism
-checks — for a given city, state, and service type. Writes them into a Lead
-Tracker-formatted `.xlsx` file. Built for pitching a professional website +
-SEO + AI-search visibility + online booking (cal.com) package to small local
-service businesses.
+checks — for a given city, state, and service type. Built for pitching a
+professional website + SEO + AI-search visibility + online booking (cal.com)
+package to small local service businesses.
+
+## Two ways to run it
+
+| | **Web app** (`worker/`) | **CLI** (this file) |
+| --- | --- | --- |
+| Where | Cloudflare, from any browser or phone | your laptop, from a terminal |
+| Output | live web table, Copy as TSV | formatted `.xlsx` |
+| Best for | pulling a batch on the go | full batches, and re-checking sites the web app couldn't reach |
+
+Use the **web app** day to day — setup and deployment are in
+[`worker/README.md`](worker/README.md). Keep the **CLI** for `.xlsx` output
+and as a fallback: some sites block Cloudflare's datacenter IPs while loading
+fine from your home connection, and the web app lists those separately as
+"Could not verify" rather than guessing.
+
+The rest of this file documents the CLI.
 
 Companion tool to
 [`docs/Dallas_No_Website_Lead_Generation_Strategy.md`](docs/Dallas_No_Website_Lead_Generation_Strategy.md) —
