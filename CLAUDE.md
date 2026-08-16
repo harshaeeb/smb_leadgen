@@ -28,67 +28,66 @@ intentionally left for manual follow-up.
 ## Repo layout
 
 ```
-leadgen.py              # the CLI — everything in one file, on purpose (see below)
+leadgen.py              # everything lives in one file, on purpose (see below)
 categories.json         # editable service-type presets ("trades", "petcare")
-                        #   SHARED: the Worker imports this same file
 requirements.txt        # requests, openpyxl — kept minimal on purpose
 .env.example             # names the one env var the script reads
 README.md               # user-facing usage docs — keep in sync with CLI flags
-worker/                 # the Cloudflare Worker — web UI, used from a phone
-  src/index.ts          #   router, Access gate, streaming NDJSON batch run
-  src/probe.ts          #   site fetch + HTMLRewriter checks + failure taxonomy
-  src/rank.ts           #   tiering/ranking — mirrors rank_and_trim() in Python
-  src/places.ts         #   Google Places Text Search
-  src/access.ts         #   Cloudflare Access JWT verification
-  src/ui.ts             #   single-page app shell (HTML + inline client JS)
-  test/harness.ts       #   test-only entrypoint, never deployed
-  README.md             #   deployment guide — read before deploying
 docs/
   Dallas_No_Website_Lead_Generation_Strategy.md   # business strategy, not code
 ```
 
-The Python CLI has no `tests/` directory — see "Known limitations / good
-next tasks" below. The Worker has a fixture-driven harness (`worker/test/`)
-but no assertion runner yet.
+There is currently no `tests/` directory in this repo — see "Known
+limitations / good next tasks" below, that's the single biggest gap and a
+good first task.
 
-## Two implementations, on purpose
+## Deployment model: local CLI only (Cloudflare was tried and reverted)
 
-There are two front ends over the same qualification rules, and **they share
-no code** — only `categories.json`:
+This is a **local Python CLI, run from the operator's own laptop**. That is
+a settled decision, not a default nobody revisited.
 
-- **`leadgen.py`** — the original CLI. Runs on the owner's laptop, writes an
-  `.xlsx`. Still the fallback when a site refuses to load for the Worker
-  (a residential IP gets served where a datacenter IP gets challenged).
-- **`worker/`** — a Cloudflare Worker with a web UI, so a batch can be pulled
-  from a phone between calls. Streams results, no storage layer, no `.xlsx`.
+A Cloudflare Workers web app was designed, built, and **removed again** in
+August 2026. It worked — streaming results with no storage layer, a
+mobile UI, `tel:` links, Cloudflare Access auth — but it was reverted for
+cost and technical reasons:
 
-This duplication was chosen deliberately over unifying them (the business
-owner picked "keep both, share nothing" when the Worker was added). **The
-cost is drift**: the tier and severity rules exist in Python *and* in
-TypeScript. If you change what makes a lead Tier 1 vs Tier 2, or how severity
-is scored, change it in `leadgen.py` **and** `worker/src/rank.ts` +
-`worker/src/probe.ts`, or the two tools will disagree about what a lead is
-worth. Both files carry a comment pointing at the other.
+- **Cost.** It required the Workers Paid plan ($5/mo) to be usable at all:
+  the free plan caps a Worker at 50 external subrequests per invocation, and
+  a 50-lead batch needs ~53 (up to 3 Places pages + one fetch per candidate).
+  A recurring subscription to run a tool that already runs free on a laptop
+  wasn't worth it. Fixing the JS-rendered-site problem properly would have
+  meant Browser Rendering on top ($0.09/browser-hour).
+- **Lead quality.** Worker subrequests originate from Cloudflare datacenter
+  IPs, which WAFs and bot management challenge far more aggressively than a
+  residential connection. Sites that load fine from the laptop came back
+  403/challenged, which had to be handled as a separate "could not verify"
+  bucket. **Running from the operator's own home IP simply gets a truer
+  answer** about whether a small business's site works — that is a real
+  advantage of the local CLI, not a consolation prize.
+- **Complexity.** A public endpoint spending a metered API key needed real
+  auth (Cloudflare Access + in-Worker JWT verification), and the tiering
+  rules ended up duplicated across Python, TypeScript, and browser JS with
+  no shared code — three copies to keep in sync.
 
-**Known, accepted divergence:** the Worker distinguishes a *blocked* fetch
-(403/429/`cf-mitigated`/challenge page → "Could not verify", held out of the
-ranked batch) from a genuinely *broken* one (DNS/connection failure, timeout,
-404/410 → Tier 1). `leadgen.py` still treats any status ≥ 400 as
-`Website Unreachable/Broken`. The Worker needs the distinction because
-Cloudflare datacenter IPs get challenged far more than a home connection
-does. Backporting the taxonomy to the CLI is a good, safe next task — it was
-consciously deferred, not missed.
+**Don't propose moving this to Cloudflare, Vercel, Lambda, or any other
+hosted runtime again without new information** — specifically, a concrete
+need to run it from a phone that outweighs the above, or evidence that
+datacenter-IP blocking has stopped being a problem. The full analysis is in
+this repo's git history (see the commit that added `worker/` and the one that
+removed it).
+
+Two findings from that exercise are language-independent and worth acting on
+in Python — see "Known limitations / good next tasks" below.
 
 ## Architecture and why it's built this way
 
-**The CLI is a single-file script, no framework.** It runs on the business
-owner's own laptop from a terminal. Keep it that way — don't introduce a web
-framework, a database, or a package structure into `leadgen.py`. If it grows
-enough to justify splitting into modules, that's a reasonable refactor, but
-keep the CLI ergonomics (`python leadgen.py CITY STATE SERVICE`) intact.
-The Worker is where the deployed-service shape lives; that split is the whole
-point, so don't blur it by making the CLI serve HTTP or the Worker write
-files.
+**Single-file script, no framework.** This runs on the business owner's own
+laptop from a terminal, not as a deployed service. Keep it that way unless
+asked to change the deployment model — don't introduce a web framework, a
+database, or a package structure unless there's a concrete reason. If it
+grows enough to justify splitting into modules, that's a reasonable
+refactor, but keep the CLI ergonomics (`python leadgen.py CITY STATE
+SERVICE`) intact.
 
 **Google Places Text Search (New) is the sole data source.** It's the only
 practical API here that returns a website field per business (`websiteUri`),
@@ -187,46 +186,12 @@ instead of an unranked dump. Don't remove the cap or make it unlimited by
 default.
 
 **The site-quality fetch identifies itself honestly.** `USER_AGENT` in
-`leadgen.py` and `worker/src/probe.ts` names the script as a bot rather than
-spoofing a browser's user-agent string — consistent with this project's
-existing stance (see the owner-name/email section above) of not impersonating
-a browser against sites it visits. Keep that if you touch the fetch logic.
-This does mean more sites challenge us than would challenge a spoofed
-browser; that's an accepted cost, and it's exactly why the Worker's "Could
-not verify" bucket exists rather than a more aggressive fetch.
-
-## Worker-specific decisions
-
-**No storage layer, by streaming instead.** HTTP-triggered Workers have no
-hard wall-clock limit while the client stays connected, so `/api/run` holds
-one response open and writes NDJSON as each probe lands. That's what avoids
-KV/D1/R2, job IDs, and polling for a batch that takes ~a minute. CPU time
-(5 min ceiling, set in `wrangler.toml`) is untouched by this because the
-8-second probe waits are network I/O, not compute. Don't "fix" the streaming
-into a job queue without a concrete reason — the storage-free design was the
-requirement, not an accident.
-
-**Ranking happens client-side.** Results stream in out of order, and the sort
-needs the whole set, so `worker/src/ui.ts` re-ranks in the browser using the
-same rules as `rankAndTrim()`. That's a third copy of the ranking rules —
-annoying, and worth collapsing if the UI ever gets a build step, but it keeps
-the page dependency-free today.
-
-**Probe concurrency is 6** (`PROBE_CONCURRENCY`), matching Cloudflare's cap
-on connections simultaneously awaiting response headers. Raising it doesn't
-buy throughput; extra connections just queue.
-
-**Auth fails closed.** If `ACCESS_TEAM_DOMAIN`/`ACCESS_AUD` are unset the
-Worker serves nothing but a 503, and `workers_dev = false` keeps a
-Access-bypassing `*.workers.dev` URL from existing. Every run spends real
-money against the Places Enterprise SKU, and this repo has already leaked an
-API key once — do not relax either guard for convenience.
-
-**HTMLRewriter, not regex, and not BeautifulSoup.** The Worker's structural
-checks use the runtime's built-in streaming HTML parser, which is strictly
-more accurate than the CLI's regex and adds no dependency. This does not
-reopen the "should we add a real parser" question for `leadgen.py` — that
-decision (see above) was about not adding a Python dependency, and it stands.
+`leadgen.py` names the script as a bot rather than spoofing a browser's
+user-agent string — consistent with this project's existing stance (see the
+owner-name/email section above) of not impersonating a browser against sites
+it visits. Keep that if you touch the fetch logic. This does mean some sites
+challenge us that wouldn't challenge a real browser; that's an accepted cost,
+and it's why the failure-classification work below matters.
 
 ## Known limitations / good next tasks
 
@@ -247,21 +212,38 @@ decision (see above) was about not adding a Python dependency, and it stands.
   PageSpeed Insights (still free-tier) for a real performance/SEO score, or
   a paid site-audit API for more signals. Don't make that switch
   speculatively; it's explicitly deferred pending real usage data.
-- **Backport the blocked-vs-broken taxonomy to `leadgen.py`.** See the
-  divergence note above. Small, safe, and it makes the CLI's Tier 1 list
-  more trustworthy too — a 403 from a WAF is not a broken website.
+- **Distinguish a *blocked* fetch from a *broken* site.** This is the top
+  priority and the most valuable thing the Cloudflare exercise surfaced.
+  `analyze_website()` currently treats any `status_code >= 400` as
+  `"Website Unreachable/Broken"` and files it under Tier 1 — but a 403 from
+  a WAF or bot manager means *we* got turned away, not that the business's
+  site is down. That puts a company with a perfectly good website at the top
+  of the call list, and the operator opens with "your website is down."
+  Proposed taxonomy (validated in the Worker build before it was reverted):
+  - genuinely **broken** → Tier 1: DNS/connection failure, timeout,
+    404, 410
+  - **could not verify** → held out of the ranked tiers entirely, listed
+    separately for manual checking: 403, 429, any response carrying a
+    `cf-mitigated` header or a bot-challenge body ("Just a moment",
+    "Checking your browser", "Attention Required"), and 5xx (which may be
+    transient)
+
+  Bias every ambiguous case toward "could not verify." Missing a lead is
+  cheap; cold-calling a business to tell them their working website is
+  broken is not.
 - **JS-rendered sites false-positive as thin content.** Wix/Squarespace/Duda
-  sites return a near-empty HTML shell and get flagged `Thin/minimal
-  content` by both implementations. Cloudflare Browser Rendering
-  ($0.09/browser-hour, with free monthly hours on the paid plan) would fix
-  this for the Worker as an opt-in deep check on ambiguous results only.
-  Deferred, consistent with the free-tools-first stance above — revisit if
-  the Tier 2 list starts producing bad calls.
+  sites return a near-empty HTML shell, so `is_thin_content()` flags them
+  even when the rendered page is substantial. This is a pre-existing flaw,
+  not a new one. Fixing it properly needs a headless browser or a rendering
+  API, which is a paid/heavy dependency — deferred, consistent with the
+  free-tools-first stance above. Revisit if the Tier 2 list starts producing
+  bad calls. A cheap partial mitigation: recognise known builder shells and
+  suppress the thin-content issue for them rather than reporting a signal we
+  can't actually measure.
 - **No cross-run dedup.** Running the same city/service twice produces two
   separate files with overlapping leads. An operator-facing enhancement
   would be an optional `--seen-file` that persists phone numbers already
-  surfaced across runs and skips them. The Worker has the same gap and no
-  storage layer to hang it on, so it would need one.
+  surfaced across runs and skips them.
 - **No append-to-master-tracker mode.** Every run creates a new `.xlsx`;
   the operator currently copy/pastes rows into a master tracker by hand. An
   `--append <path> --sheet <name>` flag that finds the last used row and
@@ -298,11 +280,7 @@ decision (see above) was about not adding a Python dependency, and it stands.
   of the Python).
 - Keep `README.md`'s "Running it" examples in sync with any CLI flag
   changes — it's the operator's only reference, and they are not a
-  developer. Same for `worker/README.md` and the deploy steps.
-- The Worker has no build step beyond Wrangler's bundling, and the UI ships
-  as one inline HTML/CSS/JS string with no external assets. Don't add a
-  framework, a bundler config, or a CDN dependency to it without a reason —
-  it's a form and a table.
+  developer.
 - No secrets in the repo, ever. `GOOGLE_PLACES_API_KEY` is read from an
   environment variable only; `.env.example` documents the name but is never
   meant to hold a real value. `.gitignore` already excludes `.env` and

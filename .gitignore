@@ -5,6 +5,3 @@ __pycache__/
 venv/
 .venv/
 Gapi.txt
-node_modules/
-.wrangler/
-.dev.vars

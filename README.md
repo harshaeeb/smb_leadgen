@@ -5,23 +5,11 @@ real professional web presence** — no website, only a social media page, a
 broken/unreachable website, or a website that fails basic professionalism
 checks — for a given city, state, and service type. Built for pitching a
 professional website + SEO + AI-search visibility + online booking (cal.com)
-package to small local service businesses.
+package to small local service businesses. Writes them into a Lead
+Tracker-formatted `.xlsx` file.
 
-## Two ways to run it
-
-| | **Web app** (`worker/`) | **CLI** (this file) |
-| --- | --- | --- |
-| Where | Cloudflare, from any browser or phone | your laptop, from a terminal |
-| Output | live web table, Copy as TSV | formatted `.xlsx` |
-| Best for | pulling a batch on the go | full batches, and re-checking sites the web app couldn't reach |
-
-Use the **web app** day to day — setup and deployment are in
-[`worker/README.md`](worker/README.md). Keep the **CLI** for `.xlsx` output
-and as a fallback: some sites block Cloudflare's datacenter IPs while loading
-fine from your home connection, and the web app lists those separately as
-"Could not verify" rather than guessing.
-
-The rest of this file documents the CLI.
+Runs on your own laptop from a terminal. A hosted web version was tried and
+deliberately dropped — see "Why this stays a local script" at the bottom.
 
 Companion tool to
 [`docs/Dallas_No_Website_Lead_Generation_Strategy.md`](docs/Dallas_No_Website_Lead_Generation_Strategy.md) —
@@ -212,3 +200,26 @@ preset (e.g. `"autorepair": [...]`) and call it with `--industry autorepair`.
   city-wide for larger areas.
 - No automated cross-run dedup — running the same city/service twice produces
   two separate files with overlapping leads.
+- A site that blocks automated visitors (a 403 from bot protection) is
+  currently reported the same as a genuinely broken site. Fixing that is the
+  top item on the list in `CLAUDE.md`.
+
+## Why this stays a local script
+
+A Cloudflare-hosted web version — usable from your phone, no Python needed —
+was built and then removed. Three reasons:
+
+1. **It needed a paid plan.** Cloudflare's free tier caps a run at 50
+   outbound requests, and a 50-lead batch needs slightly more than that. $5/mo
+   to run something that already runs free on your laptop wasn't worth it.
+2. **The leads were less trustworthy.** Requests from Cloudflare's servers get
+   challenged by bot protection far more often than requests from your home
+   internet. Sites that load fine for you came back looking broken. Running
+   from your own connection gets a more honest answer about whether a business's
+   website actually works — which is the whole point of the tool.
+3. **It needed a login system.** A public web address that spends your Google
+   API key has to be locked down, which is a lot of moving parts for a tool
+   only one person uses.
+
+If you ever do want it on your phone badly enough to revisit this, the full
+reasoning is in `CLAUDE.md` and the code is in this repo's git history.
