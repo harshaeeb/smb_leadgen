@@ -185,6 +185,24 @@ starting to show up in AI search and you won't"). It intentionally does
 tiering logic scoped to the 4 signals above. Don't fold it into severity
 scoring without checking first.
 
+**`--explain URL` is the debugging front door.** When the operator says "this
+business has a fine website, why is it on my list?", `explain()` re-runs the
+checks on one URL and prints pass/fail plus the raw numbers (word count,
+final URL, HTTP status) and a false-positive warning for recognised JS
+builders. It needs no API key and spends nothing, so it's safe to point at
+anything. Keep it in sync when you add or change a check — a check that
+can't explain itself will silently produce bad call lists, which is how the
+viewport-regex bug below survived as long as it did.
+
+**Regex fragility is a real source of false positives, not a theoretical
+one.** `has_viewport_meta()` originally required quoted attribute values, so
+`<meta name=viewport ...>` — perfectly valid HTML5 — was read as "no viewport
+tag" and put mobile-friendly sites into Tier 2. It now tolerates unquoted
+values and whitespace around `=`. If you touch any of the regex checks, test
+the sloppy-but-valid HTML forms, not just the tidy ones. This is the standing
+cost of the no-HTML-parser decision above; it's accepted, but it means the
+checks need adversarial testing.
+
 **Dedup is by phone number, falling back to a normalized business name**
 (`normalize()` strips to lowercase alphanumerics). This is deliberately
 simple — no fuzzy matching — because false-positive dedup (merging two
@@ -242,13 +260,16 @@ and it's why the failure-classification work below matters.
   speculatively; it's explicitly deferred pending real usage data.
 - **JS-rendered sites false-positive as thin content.** Wix/Squarespace/Duda
   sites return a near-empty HTML shell, so `is_thin_content()` flags them
-  even when the rendered page is substantial. This is a pre-existing flaw,
-  not a new one. Fixing it properly needs a headless browser or a rendering
-  API, which is a paid/heavy dependency — deferred, consistent with the
-  free-tools-first stance above. Revisit if the Tier 2 list starts producing
-  bad calls. A cheap partial mitigation: recognise known builder shells and
-  suppress the thin-content issue for them rather than reporting a signal we
-  can't actually measure.
+  even when the rendered page is substantial. Fixing it *properly* needs a
+  headless browser or a rendering API — a paid/heavy dependency, still
+  deferred per the free-tools-first stance above.
+  **Half-done:** `detect_js_builder()` now recognises the common builder
+  shells, and `--explain` warns loudly when thin-content fires on one. The
+  remaining step is to decide whether the qualification pipeline itself
+  should *suppress* the thin-content issue for a recognised builder (report
+  "unmeasured" rather than a signal we can't actually measure) — that
+  changes what lands in Tier 2, so get the business owner's call first
+  rather than doing it silently.
 - **No cross-run dedup.** Running the same city/service twice produces two
   separate files with overlapping leads. An operator-facing enhancement
   would be an optional `--seen-file` that persists phone numbers already

@@ -109,6 +109,20 @@ REQUEST_TIMEOUT = 8
 # "could not verify" bucket exists.
 USER_AGENT = "Mozilla/5.0 (compatible; SMBLeadgenBot/1.0)"
 
+# Fingerprints for site builders that render their content with JavaScript.
+# We don't run JS, so these pages come back as a near-empty shell and trip the
+# thin-content check regardless of how good the real page is. Used to warn
+# rather than to qualify -- see detect_js_builder().
+JS_BUILDER_MARKERS = (
+    ("Wix", ("wixstatic.com", "wix-warmup-data", "parastorage.com", "X-Wix-")),
+    ("Squarespace", ("static1.squarespace.com", "squarespace-cdn.com", "SQUARESPACE_CONTEXT")),
+    ("Duda", ("irp.cdn-website.com", "dudamobile.com", "d.la4-c1-was.salesforceliveagent")),
+    ("Webflow", ("assets.website-files.com", "uploads-ssl.webflow.com", "webflow.js")),
+    ("GoDaddy Website Builder", ("img1.wsimg.com", "godaddysites.com")),
+    ("Weebly", ("editmysite.com", "weeblysite.com")),
+    ("Shopify", ("cdn.shopify.com",)),
+)
+
 # Text meaning "a bot wall answered", not "this business has no real site".
 # Matched against the start of the response body, lowercased.
 CHALLENGE_MARKERS = (
@@ -195,7 +209,24 @@ def extract_visible_text(html_text):
 
 
 def has_viewport_meta(html_text):
-    return bool(re.search(r'(?i)<meta[^>]+name=["\']viewport["\']', html_text))
+    # Tolerates unquoted attribute values (`name=viewport`, valid HTML5) and
+    # whitespace around the `=`. The stricter earlier pattern required quotes
+    # and missed real mobile-ready pages.
+    return bool(re.search(r'(?i)<meta\b[^>]*\bname\s*=\s*["\']?viewport["\'\s>]', html_text))
+
+
+def detect_js_builder(html_text):
+    """Name the JS site builder a page was made with, if we recognise it.
+
+    Purely diagnostic. These platforms render their content client-side, so
+    the HTML we fetch is a near-empty shell and `is_thin_content()` will flag
+    them no matter how substantial the real page is. Knowing the builder lets
+    us say "we can't measure this" instead of quietly reporting a bad signal.
+    """
+    for name, markers in JS_BUILDER_MARKERS:
+        if any(m.lower() in html_text.lower() for m in markers):
+            return name
+    return None
 
 
 def is_thin_content(html_text):
@@ -305,9 +336,82 @@ def analyze_website(website_url):
         issues.append("Thin/minimal content")
 
     ai_ready = has_schema_markup(html_text)
+    detail = {
+        "final_url": resp.url,
+        "http_status": resp.status_code,
+        "word_count": len(extract_visible_text(html_text).split()),
+        "js_builder": detect_js_builder(html_text),
+        "ai_ready": ai_ready,
+    }
     if issues:
-        return {"status": "weak", "issues": issues, "ai_ready": ai_ready}
-    return {"status": "professional", "ai_ready": ai_ready}
+        return {"status": "weak", "issues": issues, "ai_ready": ai_ready, "detail": detail}
+    return {"status": "professional", "ai_ready": ai_ready, "detail": detail}
+
+
+def explain(website_url):
+    """Show exactly what the checks saw for one URL.
+
+    For answering "why did this business land on my list?" without guessing.
+    Prints per-check pass/fail plus the raw numbers behind them.
+    """
+    print(f"Checking {website_url}\n")
+    analysis = analyze_website(website_url)
+    status = analysis["status"]
+
+    if status == "social_only":
+        print("  Verdict: TIER 1 LEAD - Social Only (no real site)")
+        print("  The listed 'website' is a social media page, so no site was fetched.")
+        return
+    if status in ("broken", "blocked"):
+        label = "TIER 1 LEAD - Website Unreachable/Broken" if status == "broken" else (
+            "NOT A LEAD - held for manual verification"
+        )
+        print(f"  Verdict: {label}")
+        print(f"  Reason:  {analysis['reason']}")
+        if status == "blocked":
+            print("\n  We were turned away, so nothing is known about the real site.")
+        return
+
+    d = analysis["detail"]
+    checks = [
+        ("HTTPS", has_https(d["final_url"]), "loads over https://"),
+        (
+            "Custom domain",
+            matching_weak_builder_domain(urlparse(d["final_url"]).netloc.lower()) is None,
+            "not on a free page-builder subdomain",
+        ),
+        ("Mobile viewport tag", "No mobile viewport tag" not in analysis.get("issues", []), "has <meta name=viewport>"),
+        (
+            "Content volume",
+            "Thin/minimal content" not in analysis.get("issues", []),
+            f"{d['word_count']} words found, need {THIN_CONTENT_WORD_THRESHOLD}",
+        ),
+    ]
+
+    if d["final_url"] != website_url:
+        print(f"  Redirected to: {d['final_url']}")
+    print(f"  HTTP status:   {d['http_status']}\n")
+
+    for name, passed, detail_text in checks:
+        mark = "PASS" if passed else "FAIL"
+        print(f"    {name:<22} {mark}   ({detail_text})")
+    print(f"    {'schema.org markup':<22} {'yes' if d['ai_ready'] else 'no':<6} (informational only, never affects ranking)")
+
+    print()
+    if status == "professional":
+        print("  Verdict: NOT A LEAD - the site passes every check.")
+    else:
+        print(f"  Verdict: TIER 2 LEAD - Weak/Unprofessional Website")
+        print(f"  Issues:  {', '.join(analysis['issues'])}")
+
+    if d["js_builder"] and "Thin/minimal content" in analysis.get("issues", []):
+        print(
+            f"\n  ⚠ LIKELY FALSE POSITIVE. This page was built with {d['js_builder']}, which\n"
+            f"    renders its content with JavaScript. This script doesn't run JavaScript,\n"
+            f"    so it only sees a {d['word_count']}-word shell -- the real page a visitor\n"
+            f"    sees is probably much bigger. Treat 'Thin/minimal content' as unmeasured\n"
+            f"    here, not as a finding."
+        )
 
 
 def google_text_search(query, api_key, max_pages=3):
@@ -548,8 +652,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="Pull a ranked, top-N lead batch (no website or unprofessional website) for a city/state/service into a Lead Tracker sheet."
     )
-    parser.add_argument("city", help='e.g. "Garland"')
-    parser.add_argument("state", help='e.g. "TX"')
+    parser.add_argument("city", nargs="?", default=None, help='e.g. "Garland"')
+    parser.add_argument("state", nargs="?", default=None, help='e.g. "TX"')
     parser.add_argument(
         "service",
         nargs="?",
@@ -573,7 +677,23 @@ def main():
         help="Max leads to keep per batch/run, ranked by tier then review count/rating (default: 25)",
     )
     parser.add_argument("--output", default=None, help="Output .xlsx path")
+    parser.add_argument(
+        "--explain",
+        metavar="URL",
+        default=None,
+        help="Diagnose one website instead of running a search: shows every check, "
+        "pass/fail, and the numbers behind them. Answers 'why did this business land "
+        "on my list?'. Needs no API key and costs nothing.",
+    )
     args = parser.parse_args()
+
+    # Diagnostic mode: no Places search, so no API key and no spend.
+    if args.explain:
+        explain(args.explain)
+        return
+
+    if not args.city or not args.state:
+        parser.error("city and state are required (or use --explain URL to diagnose one site)")
 
     if not GOOGLE_KEY:
         sys.exit(

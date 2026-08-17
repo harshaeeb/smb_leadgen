@@ -134,6 +134,37 @@ python leadgen.py "Garland" "TX" "landscaper" --limit 10
 python leadgen.py "Irving" "TX" "concrete worker" --output "Irving_concrete.xlsx"
 ```
 
+### "Why is this business on my list?"
+
+When a lead looks wrong — you open their site and it's perfectly good — run
+the check on that one URL and see exactly what happened:
+
+```
+python leadgen.py --explain https://example-plumber.com/
+```
+
+It prints every check with pass/fail and the numbers behind them (word count,
+final URL after redirects, HTTP status), and warns you when a result is
+likely a false positive. No API key needed and it costs nothing, so use it
+freely.
+
+```
+    HTTPS                  PASS   (loads over https://)
+    Custom domain          PASS   (not on a free page-builder subdomain)
+    Mobile viewport tag    PASS   (has <meta name=viewport>)
+    Content volume         FAIL   (3 words found, need 150)
+    schema.org markup      no     (informational only, never affects ranking)
+
+  Verdict: TIER 2 LEAD - Weak/Unprofessional Website
+  Issues:  Thin/minimal content
+
+  ⚠ LIKELY FALSE POSITIVE. This page was built with Wix, which
+    renders its content with JavaScript...
+```
+
+If you find a false positive the tool doesn't warn about, that's worth
+reporting — it means a check needs tightening.
+
 Each run prints per-category result counts to the terminal and writes a new
 `.xlsx` named `Leads_<City>_<State>_<service>_<date>.xlsx` in the folder you
 run it from (unless you pass `--output`).
