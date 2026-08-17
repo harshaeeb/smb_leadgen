@@ -185,6 +185,15 @@ starting to show up in AI search and you won't"). It intentionally does
 tiering logic scoped to the 4 signals above. Don't fold it into severity
 scoring without checking first.
 
+**`--debug-log PATH` is how heuristics get tuned against reality.** It writes
+JSONL, one record per business examined, carrying what each check actually
+measured (final URL, status, word count, viewport/schema booleans, detected
+builder, issues fired, truncated `<head>`). Critically it **also logs sites
+discarded as `professional`**, which never reach the spreadsheet — without
+them, false negatives (a bad site that passed every check) are structurally
+invisible and can never be found. If you add a check, add its measurement to
+the record; a heuristic you can't observe in the field can't be improved.
+
 **`--explain URL` is the debugging front door.** When the operator says "this
 business has a fine website, why is it on my list?", `explain()` re-runs the
 checks on one URL and prints pass/fail plus the raw numbers (word count,

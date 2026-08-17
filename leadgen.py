@@ -101,6 +101,9 @@ WEAK_BUILDER_DOMAINS = [
 # exact -- see CLAUDE.md.
 THIN_CONTENT_WORD_THRESHOLD = 150
 
+# How much of each page's <head> to keep in --debug-log records.
+DEBUG_SNIPPET_CHARS = 2000
+
 REQUEST_TIMEOUT = 8
 # Identifies itself honestly as a bot rather than spoofing a browser --
 # consistent with this project's stance on not impersonating a browser
@@ -336,16 +339,42 @@ def analyze_website(website_url):
         issues.append("Thin/minimal content")
 
     ai_ready = has_schema_markup(html_text)
+    head_match = re.search(r"(?is)<head\b.*?</head>", html_text)
     detail = {
         "final_url": resp.url,
         "http_status": resp.status_code,
         "word_count": len(extract_visible_text(html_text).split()),
         "js_builder": detect_js_builder(html_text),
         "ai_ready": ai_ready,
+        "has_viewport": has_viewport_meta(html_text),
+        "html_bytes": len(html_text),
+        # The <head> is where meta tags and builder fingerprints live, so it's
+        # what's actually useful for diagnosing a bad check. Truncated to keep
+        # debug logs shareable.
+        "head_snippet": (head_match.group(0) if head_match else html_text[:DEBUG_SNIPPET_CHARS])[
+            :DEBUG_SNIPPET_CHARS
+        ],
     }
     if issues:
         return {"status": "weak", "issues": issues, "ai_ready": ai_ready, "detail": detail}
     return {"status": "professional", "ai_ready": ai_ready, "detail": detail}
+
+
+def write_debug_log(records, path):
+    """One JSON object per line: greppable, diffable, and safe to share.
+
+    Contains only public-website data plus what the checks measured. No API
+    key, no credentials. Still worth a skim before sending it anywhere.
+    """
+    with open(path, "w", encoding="utf-8") as f:
+        for rec in records:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+    counts = {}
+    for rec in records:
+        counts[rec["verdict"]] = counts.get(rec["verdict"], 0) + 1
+    breakdown = ", ".join(f"{k}: {v}" for k, v in sorted(counts.items()))
+    print(f"Debug log: {len(records)} sites examined ({breakdown}) -> {path}")
 
 
 def explain(website_url):
@@ -458,18 +487,49 @@ def resolve_categories(service_arg, industry, categories_file):
     return cats[industry]
 
 
-def run(city, state, categories):
+def run(city, state, categories, debug_records=None):
     """Returns (leads, unverified, stats).
 
     `unverified` holds businesses whose site we were blocked from reading.
     They are kept out of `leads` entirely so a site we simply couldn't check
     can never displace a real prospect from the ranked batch.
+
+    When `debug_records` is a list, one forensic record per business examined
+    is appended to it -- *including* the ones discarded for having a good
+    site, which are otherwise invisible. Without those, false negatives (a bad
+    site that passed every check) can never be found.
     """
     location = f"{city}, {state}"
     all_leads = []
     unverified = []
     stats = []
     seen_keys = set()
+
+    def record(name, category, reviews, rating, listed_url, verdict, tier, analysis):
+        if debug_records is None:
+            return
+        detail = (analysis or {}).get("detail", {})
+        debug_records.append(
+            {
+                "business": name,
+                "category": category,
+                "reviews": reviews,
+                "rating": rating,
+                "listed_url": listed_url,
+                "verdict": verdict,
+                "tier": tier,
+                "issues": (analysis or {}).get("issues", []),
+                "reason": (analysis or {}).get("reason"),
+                "final_url": detail.get("final_url"),
+                "http_status": detail.get("http_status"),
+                "word_count": detail.get("word_count"),
+                "has_viewport": detail.get("has_viewport"),
+                "has_schema": detail.get("ai_ready"),
+                "js_builder": detail.get("js_builder"),
+                "html_bytes": detail.get("html_bytes"),
+                "head_snippet": detail.get("head_snippet"),
+            }
+        )
 
     for category in categories:
         query = f"{category} in {location}"
@@ -497,11 +557,27 @@ def run(city, state, categories):
                 tier, severity = 0, 0
                 presence_label = "No Website"
                 website_url, issues_str, ai_ready_str = "", "", "N/A"
+                record(name, category, reviews, rating, "", "no_website", 0, None)
             else:
                 analysis = analyze_website(website)
                 status = analysis["status"]
+
                 if status == "professional":
+                    # Logged before discarding: a good site we wrongly rejected
+                    # is a false negative nobody would otherwise ever see.
+                    record(name, category, reviews, rating, website, status, None, analysis)
                     continue  # has a real, working, reasonably modern site -- not a lead
+
+                record(
+                    name,
+                    category,
+                    reviews,
+                    rating,
+                    website,
+                    status,
+                    None if status == "blocked" else (1 if status == "weak" else 0),
+                    analysis,
+                )
 
                 if status == "blocked":
                     # We learned nothing about this site. Park it for manual
@@ -685,6 +761,14 @@ def main():
         "pass/fail, and the numbers behind them. Answers 'why did this business land "
         "on my list?'. Needs no API key and costs nothing.",
     )
+    parser.add_argument(
+        "--debug-log",
+        metavar="PATH",
+        default=None,
+        help="Also write a .jsonl forensic record of every site examined -- including "
+        "the ones skipped for having a good site -- with what each check measured. "
+        "Use this when reporting a bad result so the checks can be tuned.",
+    )
     args = parser.parse_args()
 
     # Diagnostic mode: no Places search, so no API key and no spend.
@@ -708,9 +792,12 @@ def main():
         or f"Leads_{args.city.replace(' ', '_')}_{args.state}_{label.replace(' ', '_').replace(',', '-')}_{date.today().isoformat()}.xlsx"
     )
 
-    all_leads, unverified, stats = run(args.city, args.state, categories)
+    debug_records = [] if args.debug_log else None
+    all_leads, unverified, stats = run(args.city, args.state, categories, debug_records)
     kept, dropped = rank_and_trim(all_leads, args.limit)
     write_output(kept, unverified, stats, dropped, args.limit, output_path, args.city, args.state)
+    if debug_records is not None:
+        write_debug_log(debug_records, args.debug_log)
 
 
 if __name__ == "__main__":

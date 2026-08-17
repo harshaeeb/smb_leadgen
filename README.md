@@ -165,6 +165,26 @@ freely.
 If you find a false positive the tool doesn't warn about, that's worth
 reporting — it means a check needs tightening.
 
+### Capturing evidence from a whole run
+
+To improve the checks, the useful thing is a record of what they actually
+measured. Add `--debug-log` to any normal run:
+
+```
+python leadgen.py "Garland" "TX" "plumber" --debug-log run1.jsonl
+```
+
+That writes one line per business examined — **including the ones skipped
+for having a good website**, which never appear in the spreadsheet. Without
+those, there's no way to spot a genuinely bad site the tool wrongly let
+through.
+
+Each line records the final URL after redirects, HTTP status, word count,
+whether a viewport tag and schema.org markup were found, any site builder
+detected, which issues fired, and the page's `<head>` (truncated). It
+contains no API key or credentials — just public website data — but it's
+plain text, so skim it before sending it anywhere.
+
 Each run prints per-category result counts to the terminal and writes a new
 `.xlsx` named `Leads_<City>_<State>_<service>_<date>.xlsx` in the folder you
 run it from (unless you pass `--output`).
