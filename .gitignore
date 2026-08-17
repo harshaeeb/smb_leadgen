@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .env
 *.xlsx
+*.jsonl
 venv/
 .venv/
 Gapi.txt
