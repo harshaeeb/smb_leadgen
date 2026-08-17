@@ -64,7 +64,7 @@ import os
 import re
 import sys
 import time
-from datetime import date
+from datetime import date, datetime
 from urllib.parse import urlparse
 
 import requests
@@ -789,7 +789,12 @@ def main():
     label = args.service or args.industry
     output_path = (
         args.output
-        or f"Leads_{args.city.replace(' ', '_')}_{args.state}_{label.replace(' ', '_').replace(',', '-')}_{date.today().isoformat()}.xlsx"
+        # Timestamped to the second: re-running the same city/service on the
+        # same day is normal (different --limit, or just a fresh pull), and
+        # silently overwriting the earlier batch would lose call notes the
+        # operator may already have typed into it. No colons -- Windows
+        # filenames reject them.
+        or f"Leads_{args.city.replace(' ', '_')}_{args.state}_{label.replace(' ', '_').replace(',', '-')}_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.xlsx"
     )
 
     debug_records = [] if args.debug_log else None

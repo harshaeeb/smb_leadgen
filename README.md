@@ -186,8 +186,17 @@ contains no API key or credentials — just public website data — but it's
 plain text, so skim it before sending it anywhere.
 
 Each run prints per-category result counts to the terminal and writes a new
-`.xlsx` named `Leads_<City>_<State>_<service>_<date>.xlsx` in the folder you
-run it from (unless you pass `--output`).
+`.xlsx` in the folder you run it from (unless you pass `--output`), named
+like:
+
+```
+Leads_Plano_TX_plumber_2026-08-17_143052.xlsx
+```
+
+The name carries the date **and time**, so running the same city and service
+twice in one day gives you two files instead of quietly overwriting the
+first — which matters once you've started typing call notes into one. Files
+also sort chronologically by name.
 
 Note: checking each candidate's website adds a network request per lead with
 a listed site, so a run with a lot of Tier 2 candidates will take noticeably
