@@ -32,6 +32,17 @@ Design notes (why it works this way):
   ranked by review count then rating, same as before. Within Tier 2, leads
   are ranked by how many quality issues were found (worst sites first),
   falling back to review count then rating.
+- A site we were *blocked* from reading is NOT the same as a site that's
+  broken, and conflating them is the most expensive mistake this script can
+  make. A 403 from a WAF or bot manager means we got turned away; the
+  business's website may be perfectly fine. Calling them to say "your website
+  is down" would be wrong and would burn the pitch. So anything ambiguous
+  (403, 429, 5xx, a bot-challenge page) is held out of the ranked tiers
+  entirely and listed on a separate "Could Not Verify" sheet for the operator
+  to eyeball. Only failures we can attribute to the site itself — DNS or
+  connection failure, TLS failure, timeout, 404, 410 — count as broken and
+  earn a Tier 1 spot. Bias every new ambiguous case toward "could not
+  verify": missing a lead is cheap, the bad phone call is not.
 - AI-search readiness (schema.org/LocalBusiness structured data) is checked
   and reported as an informational column only — it does not affect tier or
   ranking, since it's meant for pitch prep, not lead qualification.
@@ -93,8 +104,24 @@ THIN_CONTENT_WORD_THRESHOLD = 150
 REQUEST_TIMEOUT = 8
 # Identifies itself honestly as a bot rather than spoofing a browser --
 # consistent with this project's stance on not impersonating a browser
-# against sites we visit.
+# against sites we visit. The cost of being honest is that more sites
+# challenge us than would challenge a real browser, which is exactly why the
+# "could not verify" bucket exists.
 USER_AGENT = "Mozilla/5.0 (compatible; SMBLeadgenBot/1.0)"
+
+# Text meaning "a bot wall answered", not "this business has no real site".
+# Matched against the start of the response body, lowercased.
+CHALLENGE_MARKERS = (
+    "just a moment",
+    "checking your browser",
+    "attention required",
+    "cf-browser-verification",
+    "enable javascript and cookies",
+    "verifying you are human",
+    "please verify you are a human",
+    "access denied",
+    "request unsuccessful",
+)
 
 HEADERS = [
     "Rank",
@@ -118,6 +145,21 @@ HEADERS = [
 ]
 
 COLUMN_WIDTHS = [6, 30, 20, 10, 8, 16, 18, 24, 32, 40, 16, 20, 26, 20, 14, 12, 14, 30]
+
+# The "Could Not Verify" sheet -- businesses whose site we were blocked from
+# reading. Not leads until a human looks, so they get their own tab rather
+# than a rank in the call list.
+UNVERIFIED_HEADERS = [
+    "Business Name",
+    "Niche/Category",
+    "# Reviews",
+    "Rating",
+    "Phone / Contact",
+    "Website URL",
+    "Why We Couldn't Check",
+]
+
+UNVERIFIED_COLUMN_WIDTHS = [30, 20, 10, 8, 16, 40, 38]
 
 
 def normalize(name):
@@ -166,14 +208,60 @@ def has_schema_markup(html_text):
     return bool(re.search(r'(?i)itemtype=["\']https?://schema\.org/', html_text))
 
 
+def looks_like_challenge(html_text):
+    head = html_text[:4096].lower()
+    return any(marker in head for marker in CHALLENGE_MARKERS)
+
+
+def classify_response(resp):
+    """Decide what an HTTP response tells us before we bother reading the page.
+
+    Returns a verdict dict for anything conclusive, or None when the response
+    looks like a real page worth analyzing.
+
+    The split between "broken" and "blocked" is the point of this function.
+    "broken" is a claim about the *business's site* and earns a Tier 1 lead,
+    so it's reserved for failures we can actually attribute to them. "blocked"
+    means we were turned away and learned nothing -- it must never rank.
+    """
+    status = resp.status_code
+
+    # Cloudflare sets this when it mitigates a request, sometimes alongside a
+    # 200, so it has to be checked before the status code.
+    if "cf-mitigated" in resp.headers:
+        return {"status": "blocked", "reason": f"Bot protection (cf-mitigated, HTTP {status})"}
+
+    if status in (403, 429):
+        return {"status": "blocked", "reason": f"Blocked by bot protection (HTTP {status})"}
+
+    if status in (404, 410):
+        return {"status": "broken", "reason": f"Homepage returns HTTP {status}"}
+
+    if status >= 500:
+        # Could be genuinely down (a strong lead) or a blip. Not worth the
+        # risk of being wrong on a cold call.
+        return {"status": "blocked", "reason": f"Server error (HTTP {status}) - may be transient"}
+
+    if status >= 400:
+        return {"status": "blocked", "reason": f"Unexpected HTTP {status}"}
+
+    return None
+
+
 def analyze_website(website_url):
     """Fetch a candidate's listed website once and classify it.
 
-    Returns a dict with a "status" of "social_only", "unreachable",
-    "weak" (has issues -- a lead), or "professional" (not a lead).
-    "weak" results also include "issues" (list of str) and "ai_ready" (bool).
+    Returns a dict with a "status" of:
+      "social_only"  -- Tier 1 lead, no fetch attempted
+      "broken"       -- Tier 1 lead; the site genuinely fails for real visitors
+      "blocked"      -- NOT a lead; we were turned away, verdict unknown
+      "weak"         -- Tier 2 lead; also carries "issues" and "ai_ready"
+      "professional" -- not a lead, the site is fine
+    "broken" and "blocked" also carry a human-readable "reason".
     """
     domain = urlparse(website_url).netloc.lower()
+    if not domain:
+        return {"status": "broken", "reason": "Malformed website URL on the listing"}
     if is_social_domain(domain):
         return {"status": "social_only"}
 
@@ -184,13 +272,27 @@ def analyze_website(website_url):
             timeout=REQUEST_TIMEOUT,
             allow_redirects=True,
         )
-    except requests.exceptions.RequestException:
-        return {"status": "unreachable"}
+    # Order matters: ConnectTimeout subclasses both Timeout and ConnectionError,
+    # and SSLError subclasses ConnectionError.
+    except requests.exceptions.Timeout:
+        return {"status": "broken", "reason": f"No response within {REQUEST_TIMEOUT}s"}
+    except requests.exceptions.SSLError:
+        # A bad certificate is broken for every real visitor too -- browsers
+        # show a full-page security warning.
+        return {"status": "broken", "reason": "TLS/certificate failure"}
+    except requests.exceptions.ConnectionError:
+        return {"status": "broken", "reason": "Could not connect (DNS or connection failure)"}
+    except requests.exceptions.RequestException as e:
+        return {"status": "broken", "reason": f"Request failed ({type(e).__name__})"}
 
-    if resp.status_code >= 400:
-        return {"status": "unreachable"}
+    verdict = classify_response(resp)
+    if verdict:
+        return verdict
 
     html_text = resp.text or ""
+    if looks_like_challenge(html_text):
+        return {"status": "blocked", "reason": "Bot challenge page served instead of the site"}
+
     issues = []
     if not has_https(resp.url):
         issues.append("No HTTPS")
@@ -253,8 +355,15 @@ def resolve_categories(service_arg, industry, categories_file):
 
 
 def run(city, state, categories):
+    """Returns (leads, unverified, stats).
+
+    `unverified` holds businesses whose site we were blocked from reading.
+    They are kept out of `leads` entirely so a site we simply couldn't check
+    can never displace a real prospect from the ranked batch.
+    """
     location = f"{city}, {state}"
     all_leads = []
+    unverified = []
     stats = []
     seen_keys = set()
 
@@ -264,6 +373,7 @@ def run(city, state, categories):
         places = google_text_search(query, GOOGLE_KEY)
         total = len(places)
         qualifying_count = 0
+        unverified_count = 0
 
         for p in places:
             name = p.get("displayName", {}).get("text", "")
@@ -272,6 +382,12 @@ def run(city, state, categories):
             key = phone or normalize(name)
             if not key or key in seen_keys:
                 continue
+            # Claim the key up front: whatever we decide about this business,
+            # a duplicate listing shouldn't trigger a second HTTP fetch.
+            seen_keys.add(key)
+
+            reviews = p.get("userRatingCount", 0) or 0
+            rating = p.get("rating", 0) or 0
 
             if not website:
                 tier, severity = 0, 0
@@ -282,15 +398,33 @@ def run(city, state, categories):
                 status = analysis["status"]
                 if status == "professional":
                     continue  # has a real, working, reasonably modern site -- not a lead
+
+                if status == "blocked":
+                    # We learned nothing about this site. Park it for manual
+                    # review rather than guessing -- see the module docstring.
+                    unverified_count += 1
+                    unverified.append(
+                        {
+                            "Business Name": name,
+                            "Niche/Category": category,
+                            "# Reviews": reviews,
+                            "Rating": rating,
+                            "Phone / Contact": phone,
+                            "Website URL": website,
+                            "Why We Couldn't Check": analysis["reason"],
+                        }
+                    )
+                    continue
+
                 website_url = website
                 if status == "social_only":
                     tier, severity = 0, 0
                     presence_label = "Social Only (no real site)"
                     issues_str, ai_ready_str = "", "N/A"
-                elif status == "unreachable":
+                elif status == "broken":
                     tier, severity = 0, 0
                     presence_label = "Website Unreachable/Broken"
-                    issues_str, ai_ready_str = "", "N/A"
+                    issues_str, ai_ready_str = analysis["reason"], "N/A"
                 else:  # weak
                     tier = 1
                     severity = len(analysis["issues"])
@@ -298,14 +432,13 @@ def run(city, state, categories):
                     issues_str = ", ".join(analysis["issues"])
                     ai_ready_str = "Yes" if analysis["ai_ready"] else "No"
 
-            seen_keys.add(key)
             qualifying_count += 1
             all_leads.append(
                 {
                     "Business Name": name,
                     "Niche/Category": category,
-                    "# Reviews": p.get("userRatingCount", 0) or 0,
-                    "Rating": p.get("rating", 0) or 0,
+                    "# Reviews": reviews,
+                    "Rating": rating,
                     "Phone / Contact": phone,
                     "Source (Maps/Drive-by)": "Google Maps",
                     "Digital Presence Tier": presence_label,
@@ -324,11 +457,12 @@ def run(city, state, categories):
                 }
             )
 
-        stats.append((category, total, qualifying_count))
-        print(f"  -> {total} results, {qualifying_count} qualifying leads")
+        stats.append((category, total, qualifying_count, unverified_count))
+        suffix = f", {unverified_count} could not be verified" if unverified_count else ""
+        print(f"  -> {total} results, {qualifying_count} qualifying leads{suffix}")
         time.sleep(1)
 
-    return all_leads, stats
+    return all_leads, unverified, stats
 
 
 def rank_and_trim(all_leads, limit):
@@ -350,16 +484,20 @@ def rank_and_trim(all_leads, limit):
     return kept, dropped
 
 
-def write_output(leads, stats, dropped, limit, output_path, city, state):
+def write_output(leads, unverified, stats, dropped, limit, output_path, city, state):
     wb = Workbook()
     ws = wb.active
     ws.title = "Lead Tracker"
 
-    ws.append(HEADERS)
     header_fill = PatternFill("solid", start_color="1F6FEB", end_color="1F6FEB")
-    for cell in ws[1]:
-        cell.font = Font(bold=True, color="FFFFFF")
-        cell.fill = header_fill
+
+    def style_header(sheet):
+        for cell in sheet[1]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = header_fill
+
+    ws.append(HEADERS)
+    style_header(ws)
 
     for i, lead in enumerate(leads, start=1):
         row = [i] + [lead.get(h, "") for h in HEADERS[1:]]
@@ -368,22 +506,42 @@ def write_output(leads, stats, dropped, limit, output_path, city, state):
     for col_letter, width in zip("ABCDEFGHIJKLMNOPQR", COLUMN_WIDTHS):
         ws.column_dimensions[col_letter].width = width
 
+    # Businesses whose site we couldn't read. Deliberately a separate sheet:
+    # the Lead Tracker tab stays a clean 1..N ranked call list, and these
+    # need a human to look before they're worth a call.
+    unchecked = wb.create_sheet("Could Not Verify")
+    unchecked.append(UNVERIFIED_HEADERS)
+    style_header(unchecked)
+    if unverified:
+        for row in sorted(unverified, key=lambda r: to_num(r["# Reviews"]), reverse=True):
+            unchecked.append([row.get(h, "") for h in UNVERIFIED_HEADERS])
+    else:
+        unchecked.append(["No leads needed manual verification in this run."])
+    for col_letter, width in zip("ABCDEFG", UNVERIFIED_COLUMN_WIDTHS):
+        unchecked.column_dimensions[col_letter].width = width
+
     summary = wb.create_sheet("Search Summary")
     summary.append([f"Search run: {city}, {state} — {date.today().isoformat()}"])
     summary.append([f"Batch limit: top {limit}, Tier 1 (no real site) ranked above Tier 2 (weak site)"])
     summary.append([f"Candidates found beyond the limit (not included): {dropped}"])
     summary.append([])
-    summary.append(["Category", "# Results", "# Qualifying Leads"])
+    summary.append(["Category", "# Results", "# Qualifying Leads", "# Could Not Verify"])
     for cell in summary[5]:
         cell.font = Font(bold=True)
     for row in stats:
         summary.append(list(row))
     summary.append([])
     summary.append(["Total leads in this batch:", len(leads)])
+    summary.append(["Held for manual verification:", len(unverified)])
     summary.column_dimensions["A"].width = 30
 
     wb.save(output_path)
     print(f"\nSaved {len(leads)} leads (top {limit}, {dropped} more found but not included) to {output_path}")
+    if unverified:
+        print(
+            f"{len(unverified)} business(es) blocked our check and are on the "
+            f"'Could Not Verify' tab — open those sites yourself before calling."
+        )
 
 
 def main():
@@ -430,9 +588,9 @@ def main():
         or f"Leads_{args.city.replace(' ', '_')}_{args.state}_{label.replace(' ', '_').replace(',', '-')}_{date.today().isoformat()}.xlsx"
     )
 
-    all_leads, stats = run(args.city, args.state, categories)
+    all_leads, unverified, stats = run(args.city, args.state, categories)
     kept, dropped = rank_and_trim(all_leads, args.limit)
-    write_output(kept, stats, dropped, args.limit, output_path, args.city, args.state)
+    write_output(kept, unverified, stats, dropped, args.limit, output_path, args.city, args.state)
 
 
 if __name__ == "__main__":

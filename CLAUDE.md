@@ -151,6 +151,31 @@ enhancement request with this context already established** — don't silently
 swap in BeautifulSoup or a paid API; surface the cost/benefit and let the
 business owner decide again, same as the original Yelp call.
 
+**A *blocked* fetch is not a *broken* site, and the difference is load-bearing.**
+`classify_response()` and `analyze_website()` split failures into two
+buckets, and this is the single most important correctness rule in the
+script:
+
+- **broken** → Tier 1 lead. Reserved for failures attributable to the
+  business's own site: DNS/connection failure, TLS/certificate failure,
+  timeout, 404, 410, malformed URL on the listing. These fail for real
+  customers too, so claiming the site is broken is defensible.
+- **blocked** → not a lead at all. 403, 429, 5xx, any response carrying a
+  `cf-mitigated` header, and any body matching `CHALLENGE_MARKERS`. These
+  mean *we* were turned away and learned nothing. They go to `unverified`,
+  land on a separate "Could Not Verify" sheet, and are excluded from
+  `rank_and_trim()` entirely.
+
+The asymmetry is deliberate. A false "broken" puts a business with a
+perfectly good website at the top of the call list and has the operator
+open with "your website is down" — that torches the pitch and their
+credibility. A false "could not verify" just means one extra manual check.
+**Bias every new ambiguous case toward "could not verify."** Don't
+"simplify" this back into a single `status_code >= 400` check; that's what
+it used to be, and it was wrong. Note this also means the honest bot
+user-agent (below) costs us some reach — accepted, because the alternative
+is impersonating a browser.
+
 **AI-search readiness is informational only, not a qualification/ranking
 signal.** `has_schema_markup()` checks for `schema.org` JSON-LD or microdata
 on a fetched site and is reported in the `AI Search Ready (schema.org)`
@@ -198,9 +223,12 @@ and it's why the failure-classification work below matters.
 - **No automated tests ship in this repo.** Development so far was verified
   with ad hoc mock-based tests (mocking `google_text_search` and
   `requests.get` to avoid needing real API keys or live network calls, then
-  asserting on `analyze_website`, `has_https`, `has_viewport_meta`,
-  `is_thin_content`, `has_schema_markup`, `matching_weak_builder_domain`,
-  `normalize`, `resolve_categories`, `rank_and_trim`, and `write_output`).
+  asserting on `analyze_website`, `classify_response`, `looks_like_challenge`,
+  `has_https`, `has_viewport_meta`, `is_thin_content`, `has_schema_markup`,
+  `matching_weak_builder_domain`, `normalize`, `resolve_categories`,
+  `rank_and_trim`, and `write_output`). The blocked-vs-broken taxonomy was
+  verified by pointing `analyze_website()` at a local server returning each
+  status code — worth keeping as a fixture if you formalize the tests.
   Formalizing that into a `tests/` dir with `pytest` (or even `unittest`,
   stdlib only, no new dependency) is probably the highest-value first PR.
 - **Website-quality checks are heuristic, not a real audit — revisit if
@@ -212,25 +240,6 @@ and it's why the failure-classification work below matters.
   PageSpeed Insights (still free-tier) for a real performance/SEO score, or
   a paid site-audit API for more signals. Don't make that switch
   speculatively; it's explicitly deferred pending real usage data.
-- **Distinguish a *blocked* fetch from a *broken* site.** This is the top
-  priority and the most valuable thing the Cloudflare exercise surfaced.
-  `analyze_website()` currently treats any `status_code >= 400` as
-  `"Website Unreachable/Broken"` and files it under Tier 1 — but a 403 from
-  a WAF or bot manager means *we* got turned away, not that the business's
-  site is down. That puts a company with a perfectly good website at the top
-  of the call list, and the operator opens with "your website is down."
-  Proposed taxonomy (validated in the Worker build before it was reverted):
-  - genuinely **broken** → Tier 1: DNS/connection failure, timeout,
-    404, 410
-  - **could not verify** → held out of the ranked tiers entirely, listed
-    separately for manual checking: 403, 429, any response carrying a
-    `cf-mitigated` header or a bot-challenge body ("Just a moment",
-    "Checking your browser", "Attention Required"), and 5xx (which may be
-    transient)
-
-  Bias every ambiguous case toward "could not verify." Missing a lead is
-  cheap; cold-calling a business to tell them their working website is
-  broken is not.
 - **JS-rendered sites false-positive as thin content.** Wix/Squarespace/Duda
   sites return a near-empty HTML shell, so `is_thin_content()` flags them
   even when the rendered page is substantial. This is a pre-existing flaw,

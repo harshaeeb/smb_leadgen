@@ -36,23 +36,32 @@ API to script against.
    **Tier 2 (Weak/Unprofessional Website)** lead, and the specific issues
    found are listed in the output so you know what to pitch.
 3. A business with **no website at all**, only a **Facebook/Instagram page**,
-   or a website that's **unreachable/broken** when the script tries to load
-   it, is a **Tier 1** lead — the strongest prospects, since they have
-   effectively zero real web presence.
-4. Also checks whether the site (if any) has `schema.org`/structured-data
+   or a website that's **genuinely broken** when the script tries to load it
+   (dead domain, times out, 404s, bad security certificate) is a **Tier 1**
+   lead — the strongest prospects, since they have effectively zero real web
+   presence.
+4. Some sites refuse automated visitors — you get a "prove you're human"
+   wall instead of the page. That tells us **nothing** about whether their
+   website is any good, so those businesses are **not ranked as leads at
+   all**. They go on a separate **Could Not Verify** tab with a note about
+   what happened, for you to open and judge yourself. This is deliberate:
+   calling a business to say "your website is down" when it's actually fine
+   is the worst way to open a cold call.
+5. Also checks whether the site (if any) has `schema.org`/structured-data
    markup, as a rough signal of AI-search readiness (Google AI Overviews,
    ChatGPT/Perplexity-style answer engines, etc.). This is reported as an
    informational column for your pitch — it does not affect tier or ranking.
-5. Dedupes by phone number (or name if no phone), ranks **Tier 1 leads above
+6. Dedupes by phone number (or name if no phone), ranks **Tier 1 leads above
    Tier 2 leads**, and within each tier:
    - Tier 1: ranked by review count first, star rating as a tie-breaker.
    - Tier 2: ranked by number of quality issues found (worst sites first),
      then review count, then rating.
    Keeps only the top N (default 25) — the batch you're most likely to
    close.
-6. Writes the ranked batch to an `.xlsx` with a `Lead Tracker` tab (numbered
-   1–N by rank) and a `Search Summary` tab with per-category counts and how
-   many candidates were found beyond the batch limit.
+7. Writes the ranked batch to an `.xlsx` with three tabs: `Lead Tracker`
+   (numbered 1–N by rank — your call list), `Could Not Verify` (businesses
+   that blocked the check, for you to eyeball), and `Search Summary`
+   (per-category counts and how many candidates were cut by the limit).
 
 ## One-time setup
 
@@ -136,10 +145,10 @@ longer than a pure "no website" search did.
 ## Tiers and ranking — how the top 25 get picked
 
 **Tier 1 — no real web presence** (highest priority): no website, social
-media page only (Facebook/Instagram/etc.), or a website that errored/timed
-out/404'd when fetched. Ranked by review count first, star rating as a
-tie-breaker — a business with proven customer demand and effectively no
-usable web presence is the strongest pitch.
+media page only (Facebook/Instagram/etc.), or a website that's genuinely
+broken (dead domain, timed out, 404'd, bad certificate). Ranked by review
+count first, star rating as a tie-breaker — a business with proven customer
+demand and effectively no usable web presence is the strongest pitch.
 
 **Tier 2 — has a site, but it's weak**: the site loaded, but failed one or
 more of the professionalism checks (no HTTPS, free page-builder subdomain, no
@@ -148,7 +157,9 @@ first (the worse the site, the higher it ranks within this tier), then
 review count, then rating.
 
 Tier 1 leads always sort above Tier 2 leads. A site that passes every check
-is not included at all — it's not a realistic lead for this pitch.
+is not included at all — it's not a realistic lead for this pitch. Neither
+is a site we couldn't read: those sit on the **Could Not Verify** tab and
+never take a slot in your top 25.
 
 The `Search Summary` tab tells you how many total candidates were found for
 the run and how many got cut by the `--limit`, so you can see if a service/city
@@ -177,6 +188,10 @@ preset (e.g. `"autorepair": [...]`) and call it with `--industry autorepair`.
 - `AI Search Ready (schema.org)` is informational — a "No" here is a talking
   point (their competitors may start showing up in AI answer engines and they
   won't), not a qualification signal.
+- Check the **Could Not Verify** tab before you finish a calling session.
+  Those businesses blocked the automated check, so their site could be
+  anything — open the link, and if it's bad, they're a lead you'd otherwise
+  have missed.
 - Copy/paste rows into your master financial-model Lead Tracker tab if you
   want everything in one workbook — note the column order here has several
   extra columns inserted after "Source" compared to the original tracker, so
@@ -200,9 +215,10 @@ preset (e.g. `"autorepair": [...]`) and call it with `--industry autorepair`.
   city-wide for larger areas.
 - No automated cross-run dedup — running the same city/service twice produces
   two separate files with overlapping leads.
-- A site that blocks automated visitors (a 403 from bot protection) is
-  currently reported the same as a genuinely broken site. Fixing that is the
-  top item on the list in `CLAUDE.md`.
+- Sites built on Wix/Squarespace can be wrongly flagged "Thin/minimal
+  content" — they load their text with JavaScript, which this script doesn't
+  run. Worth a glance at the site before you use that specific point on a
+  call.
 
 ## Why this stays a local script
 
