@@ -59,6 +59,7 @@ Design notes (why it works this way):
 """
 
 import argparse
+import html
 import json
 import os
 import re
@@ -208,6 +209,16 @@ def has_https(final_url):
 def extract_visible_text(html_text):
     text = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", html_text)
     text = re.sub(r"(?s)<[^>]+>", " ", text)
+    # Unescape *after* stripping tags, not before -- an entity like &lt;
+    # could otherwise decode into something that looks like a tag and gets
+    # wrongly stripped by the regex above. Real-world pages lean on entities
+    # for "&copy;", "&nbsp;", "&middot;", curly quotes, etc.; left encoded,
+    # each one is miscounted as its own "word" and inflates the count above
+    # what a visitor actually reads -- the opposite of what THIN_CONTENT_WORD_THRESHOLD
+    # is trying to measure. A decoded &nbsp; is a real space character, so
+    # unescaping can also *lower* the count by correctly merging what were
+    # separate whitespace-delimited entity tokens.
+    text = html.unescape(text)
     return re.sub(r"\s+", " ", text).strip()
 
 

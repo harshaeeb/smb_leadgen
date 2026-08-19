@@ -237,6 +237,37 @@ The cap exists so the operator always works the strongest prospects first
 instead of an unranked dump. Don't remove the cap or make it unlimited by
 default.
 
+**`THIN_CONTENT_WORD_THRESHOLD = 150` was reaffirmed, not assumed, against a
+real case.** A business owner flagged a specific lead (Sawyer Brothers
+Plumbing) as a false positive — the site looked clean and professional. The
+`--explain`/`--debug-log` text preview showed the actual 75 counted words:
+nav bar, trust badges ("Bonded · Insured · Licensed"), the company name
+repeated three times, a bare list of four city names, boilerplate copyright,
+and exactly **one** sentence of real marketing copy. Fixing a real bug found
+along the way (unescaped HTML entities inflating the count, see below) took
+it to 72, not up. Presented with that breakdown, the business owner chose to
+keep the threshold as-is: a homepage that's mostly nav and boilerplate is a
+legitimate weakness to flag regardless of visual polish, since the pitch is
+explicitly about SEO/AI-search content depth. **Looking clean and being
+thin on unique text are different axes** — don't treat "the site looks
+professional" as evidence this check is wrong; ask what the actual counted
+words are first (`--explain` shows them), the same way this call was made.
+If you're asked to change this threshold, treat it like the free-tools-vs-
+paid-API decision elsewhere in this doc: surface a concrete before/after
+example and let the business owner decide again, don't pick a number.
+
+**Entities must be unescaped, and only *after* stripping tags.**
+`extract_visible_text()` runs `html.unescape()` after the tag-strip regex,
+not before. Order matters: unescaping first could turn `&lt;script&gt;`
+into a literal `<script>` string that the tag-stripping regex would then
+wrongly consume. Left encoded, entities like `&nbsp;`/`&copy;`/`&middot;`
+each get miscounted as their own "word," which *inflates* the content count
+above what a visitor actually reads — the opposite of what
+`THIN_CONTENT_WORD_THRESHOLD` is trying to measure, and it also made
+`--explain`'s text preview unreadable. Found while diagnosing the Sawyer
+Brothers report above; verified both that decoding doesn't break tag
+stripping and that it doesn't accidentally admit a real tag.
+
 **The site-quality fetch identifies itself honestly.** `USER_AGENT` in
 `leadgen.py` names the script as a bot rather than spoofing a browser's
 user-agent string — consistent with this project's existing stance (see the
