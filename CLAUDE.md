@@ -99,6 +99,27 @@ and Yelp's usage costs stopped being worth that limited signal. Don't re-add
 it purely to widen result coverage without discussing the cost/benefit with
 the business owner again.
 
+**"No Website" means "Google's data has no website field," not "we
+confirmed this business has no site."** Trusting `websiteUri` absence is the
+whole design (see above), but that field can genuinely be empty on Google's
+side for a business with a real, working site. Confirmed on a real run:
+Sawyer Brothers Plumbing (a business already known from the thin-content case
+below to have a working site) came back with **no `websiteUri` key at all**
+when searching "plumber in Plano, TX" — `formattedAddress` on that listing
+was Richardson, TX, matching the business's own service-area list
+(Denton/Richardson/Weatherford/Mansfield — not Plano). Google was surfacing a
+nearby business for the query, and whichever Google Business Profile backs
+that specific listing simply never had its website field filled in. There is
+no listing deduplication bug here — the raw API response contained exactly
+one entry for this business. **Do not build a second lookup source to
+cross-check this** (e.g. a general web search for the business name) without
+discussing it with the business owner first — that reopens exactly the
+scope question the Yelp removal already settled, and this project's stance
+on not scraping beyond the one sanctioned API is deliberate (see the
+owner-name/email section below). The `Address` column exists specifically so
+the operator can catch this pattern at a glance — an out-of-city address on
+a "No Website" lead is worth a manual check before trusting the label.
+
 **`websiteUri` triggers Google's Enterprise SKU pricing** (~$35/1000
 requests as of when this was built — verify current pricing before changing
 the field mask, since Google's Places pricing tiers have moved before and

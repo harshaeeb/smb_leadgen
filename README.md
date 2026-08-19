@@ -252,6 +252,13 @@ preset (e.g. `"autorepair": [...]`) and call it with `--industry autorepair`.
   Those businesses blocked the automated check, so their site could be
   anything — open the link, and if it's bad, they're a lead you'd otherwise
   have missed.
+- **"No Website" means Google's own listing had no website link — not that
+  we double-checked.** Google's data can miss a real site, especially for a
+  business with multiple locations (each city can have its own separately
+  maintained Google listing, and they're not always filled out consistently).
+  If a "No Website" lead's `Address` is in a different city than the one you
+  searched, that's worth a quick manual Google search before you call —
+  you may be looking at a business's secondary listing, not their main one.
 - Copy/paste rows into your master financial-model Lead Tracker tab if you
   want everything in one workbook — note the column order here has several
   extra columns inserted after "Source" compared to the original tracker, so

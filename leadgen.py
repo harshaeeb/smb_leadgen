@@ -148,6 +148,7 @@ HEADERS = [
     "# Reviews",
     "Rating",
     "Phone / Contact",
+    "Address",
     "Source (Maps/Drive-by)",
     "Digital Presence Tier",
     "Website URL",
@@ -162,7 +163,7 @@ HEADERS = [
     "Notes",
 ]
 
-COLUMN_WIDTHS = [6, 30, 20, 10, 8, 16, 18, 24, 32, 40, 16, 20, 26, 20, 14, 12, 14, 30]
+COLUMN_WIDTHS = [6, 30, 20, 10, 8, 16, 38, 18, 24, 32, 40, 16, 20, 26, 20, 14, 12, 14, 30]
 
 # The "Could Not Verify" sheet -- businesses whose site we were blocked from
 # reading. Not leads until a human looks, so they get their own tab rather
@@ -173,11 +174,12 @@ UNVERIFIED_HEADERS = [
     "# Reviews",
     "Rating",
     "Phone / Contact",
+    "Address",
     "Website URL",
     "Why We Couldn't Check",
 ]
 
-UNVERIFIED_COLUMN_WIDTHS = [30, 20, 10, 8, 16, 40, 38]
+UNVERIFIED_COLUMN_WIDTHS = [30, 20, 10, 8, 16, 38, 40, 38]
 
 
 def normalize(name):
@@ -577,6 +579,7 @@ def run(city, state, categories, debug_records=None):
             name = p.get("displayName", {}).get("text", "")
             phone = p.get("nationalPhoneNumber", "")
             website = p.get("websiteUri", "")
+            address = p.get("formattedAddress", "")
             key = phone or normalize(name)
             if not key or key in seen_keys:
                 continue
@@ -624,6 +627,7 @@ def run(city, state, categories, debug_records=None):
                             "# Reviews": reviews,
                             "Rating": rating,
                             "Phone / Contact": phone,
+                            "Address": address,
                             "Website URL": website,
                             "Why We Couldn't Check": analysis["reason"],
                         }
@@ -654,6 +658,7 @@ def run(city, state, categories, debug_records=None):
                     "# Reviews": reviews,
                     "Rating": rating,
                     "Phone / Contact": phone,
+                    "Address": address,
                     "Source (Maps/Drive-by)": "Google Maps",
                     "Digital Presence Tier": presence_label,
                     "Website URL": website_url,
@@ -717,7 +722,7 @@ def write_output(leads, unverified, stats, dropped, limit, output_path, city, st
         row = [i] + [lead.get(h, "") for h in HEADERS[1:]]
         ws.append(row)
 
-    for col_letter, width in zip("ABCDEFGHIJKLMNOPQR", COLUMN_WIDTHS):
+    for col_letter, width in zip("ABCDEFGHIJKLMNOPQRS", COLUMN_WIDTHS):
         ws.column_dimensions[col_letter].width = width
 
     # Businesses whose site we couldn't read. Deliberately a separate sheet:
@@ -731,7 +736,7 @@ def write_output(leads, unverified, stats, dropped, limit, output_path, city, st
             unchecked.append([row.get(h, "") for h in UNVERIFIED_HEADERS])
     else:
         unchecked.append(["No leads needed manual verification in this run."])
-    for col_letter, width in zip("ABCDEFG", UNVERIFIED_COLUMN_WIDTHS):
+    for col_letter, width in zip("ABCDEFGH", UNVERIFIED_COLUMN_WIDTHS):
         unchecked.column_dimensions[col_letter].width = width
 
     summary = wb.create_sheet("Search Summary")
