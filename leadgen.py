@@ -323,6 +323,17 @@ def analyze_website(website_url):
     if verdict:
         return verdict
 
+    # requests defaults to ISO-8859-1 when the Content-Type header omits a
+    # charset (per RFC 2616) -- but plenty of small-business sites only
+    # declare UTF-8 via a <meta charset> tag, not the header, and that
+    # default silently mangles every accented character, curly quote, or "©"
+    # into garbage. Word count survives either way (character corruption
+    # doesn't usually change whitespace boundaries), but --debug-log and
+    # --explain read as nonsense, and a false "thin content" driven by mangled
+    # apostrophes/quotes splitting words apart becomes possible on non-ASCII
+    # copy. Trust the header only when it actually declared a charset.
+    if "charset" not in (resp.headers.get("Content-Type") or "").lower():
+        resp.encoding = resp.apparent_encoding
     html_text = resp.text or ""
     if looks_like_challenge(html_text):
         return {"status": "blocked", "reason": "Bot challenge page served instead of the site"}
@@ -340,10 +351,11 @@ def analyze_website(website_url):
 
     ai_ready = has_schema_markup(html_text)
     head_match = re.search(r"(?is)<head\b.*?</head>", html_text)
+    visible_text = extract_visible_text(html_text)
     detail = {
         "final_url": resp.url,
         "http_status": resp.status_code,
-        "word_count": len(extract_visible_text(html_text).split()),
+        "word_count": len(visible_text.split()),
         "js_builder": detect_js_builder(html_text),
         "ai_ready": ai_ready,
         "has_viewport": has_viewport_meta(html_text),
@@ -354,6 +366,11 @@ def analyze_website(website_url):
         "head_snippet": (head_match.group(0) if head_match else html_text[:DEBUG_SNIPPET_CHARS])[
             :DEBUG_SNIPPET_CHARS
         ],
+        # Every word the thin-content check counted, verbatim. This is what
+        # actually answers "is 75 words a real finding or a broken check?" --
+        # a word count alone can't distinguish "genuinely placeholder text"
+        # from "a real business that just writes a lean homepage."
+        "text_preview": visible_text[:DEBUG_SNIPPET_CHARS],
     }
     if issues:
         return {"status": "weak", "issues": issues, "ai_ready": ai_ready, "detail": detail}
@@ -441,6 +458,12 @@ def explain(website_url):
             f"    sees is probably much bigger. Treat 'Thin/minimal content' as unmeasured\n"
             f"    here, not as a finding."
         )
+    elif "Thin/minimal content" in analysis.get("issues", []):
+        # No known JS builder detected, so print exactly what was counted --
+        # the only way to tell a real placeholder page from a lean homepage
+        # or an unrecognised rendering framework is to read the words.
+        print(f"\n  Text this script actually found ({d['word_count']} words):")
+        print(f'    "{d["text_preview"]}"')
 
 
 def google_text_search(query, api_key, max_pages=3):
