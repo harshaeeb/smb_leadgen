@@ -120,6 +120,26 @@ owner-name/email section below). The `Address` column exists specifically so
 the operator can catch this pattern at a glance — an out-of-city address on
 a "No Website" lead is worth a manual check before trusting the label.
 
+**The OSM cross-check may only *act* on a phone match.** `cross_check_no_website()`
+asks OpenStreetMap (free, no key, via `measure_sources.osm_lookup`) about
+exactly the leads Google reported as having no website. The asymmetry that
+governs it: in `measure_sources.py` a wrong fuzzy name match only skews a
+statistic, but here it would **silently delete a real prospect** from the
+call list — a false negative the operator can never see. So:
+
+- **Phone matches Google's** → identity is settled, the lead is corrected
+  (site fetched and analyzed properly; removed if it turns out professional,
+  reclassified to Tier 2 if weak).
+- **Name matched but phone didn't** → *never* reclassify. Record a
+  "verify before calling" note and leave the Tier 1 ranking alone.
+- **Overpass unreachable** → report "lookup unavailable", not "no website
+  found". Same rule as the blocked-vs-broken taxonomy below: never state a
+  fact about the business when what actually happened is that we couldn't ask.
+
+The whole pass fails soft — any geocode or Overpass problem leaves the batch
+exactly as it was. Don't loosen the phone gate to "catch more"; the cost of a
+wrong correction is a lost lead, and it is invisible.
+
 **`websiteUri` triggers Google's Enterprise SKU pricing** (~$35/1000
 requests as of when this was built — verify current pricing before changing
 the field mask, since Google's Places pricing tiers have moved before and

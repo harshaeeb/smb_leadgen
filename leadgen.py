@@ -390,6 +390,120 @@ def analyze_website(website_url):
     return {"status": "professional", "ai_ready": ai_ready, "detail": detail}
 
 
+def progress_line(name, analysis):
+    """One compact line per site checked, so a long run visibly makes progress."""
+    label = (name or "")[:38].ljust(38)
+    status = analysis["status"]
+    if status == "professional":
+        return f"{label} ok — has a real site, skipping"
+    if status == "weak":
+        return f"{label} LEAD (tier 2) — {', '.join(analysis['issues'])}"
+    if status == "social_only":
+        return f"{label} LEAD (tier 1) — social page only"
+    if status == "broken":
+        return f"{label} LEAD (tier 1) — {analysis['reason']}"
+    return f"{label} skipped — {analysis['reason']}"
+
+
+def cross_check_no_website(leads, city, state, overpass_url=None, pause=2.0):
+    """Validate 'No Website' leads against OpenStreetMap before they ship.
+
+    Google's websiteUri is genuinely absent sometimes for businesses that do
+    have a site (see the Sawyer Brothers case in CLAUDE.md). This asks a free
+    second source about exactly those leads.
+
+    Acting on a match is riskier than counting one: a wrong pairing here would
+    drop a real prospect off the call list, and nobody would ever see it. So a
+    lead is only ever *reclassified* when OSM's phone number matches Google's
+    exactly -- that settles identity. A name-only match is recorded as a note
+    for the operator to check, and the lead keeps its Tier 1 ranking.
+
+    Returns (leads, corrected, flagged). Fails soft: any problem reaching
+    Overpass leaves the batch exactly as it was.
+    """
+    try:
+        from measure_sources import geocode_city, osm_lookup
+    except ImportError:
+        print("  (measure_sources.py not found — skipping cross-check)")
+        return leads, 0, 0
+
+    targets = [l for l in leads if l["Digital Presence Tier"] == "No Website"]
+    if not targets:
+        return leads, 0, 0
+
+    print(f"\nCross-checking {len(targets)} 'No Website' lead(s) against OpenStreetMap...")
+    session = requests.Session()
+    try:
+        lat, lon = geocode_city(city, state, session)
+    except Exception as e:
+        print(f"  Could not geocode {city}, {state} ({type(e).__name__}) — skipping cross-check.")
+        return leads, 0, 0
+
+    corrected = flagged = 0
+    drop = set()
+
+    for i, lead in enumerate(targets, 1):
+        name = lead["Business Name"]
+        print(f"    [{i}/{len(targets)}] {name[:38].ljust(38)}", end=" ", flush=True)
+        try:
+            res = osm_lookup(
+                name, lat, lon, 40000,
+                overpass_url or "https://overpass-api.de/api/interpreter",
+                session, expected_phone=lead.get("Phone / Contact"),
+            )
+        except Exception as e:
+            print(f"lookup failed ({type(e).__name__})")
+            continue
+
+        site = (res or {}).get("website")
+        if not site:
+            # Same distinction the blocked-vs-broken taxonomy makes: "OSM has
+            # nothing for them" and "we couldn't ask OSM" are different facts,
+            # and only the first one is evidence about the business.
+            note = (res or {}).get("note", "")
+            unreachable = any(
+                s in note for s in ("request failed", "HTTP", "non-JSON")
+            )
+            print(f"lookup unavailable ({note})" if unreachable
+                  else "OSM has no website for them either")
+        elif res.get("phone_match"):
+            # Same phone number: this is definitely the same business, so the
+            # "No Website" label is simply wrong. Check the real site properly.
+            print(f"OSM has {site[:44]} (phone match)")
+            analysis = analyze_website(site)
+            corrected += 1
+            if analysis["status"] == "professional":
+                print("        -> site is fine; removing, this was never a lead")
+                drop.add(id(lead))
+            elif analysis["status"] == "weak":
+                print(f"        -> reclassified tier 2: {', '.join(analysis['issues'])}")
+                lead.update({
+                    "Digital Presence Tier": "Weak/Unprofessional Website",
+                    "Website URL": site,
+                    "Website Issues Found": ", ".join(analysis["issues"]),
+                    "AI Search Ready (schema.org)": "Yes" if analysis["ai_ready"] else "No",
+                    "_tier": 1,
+                    "_severity": len(analysis["issues"]),
+                })
+            else:
+                print(f"        -> {analysis.get('reason', analysis['status'])}; still a tier 1 lead")
+                lead["Website URL"] = site
+                lead["Website Issues Found"] = analysis.get("reason", "")
+        else:
+            # Name matched but the phone didn't. Could easily be a different
+            # business, so flag rather than act.
+            flagged += 1
+            print(f"OSM may have {site[:40]} (name only — unconfirmed)")
+            lead["Website Issues Found"] = f"OSM lists {site} for a similar name — verify before calling"
+
+        if i < len(targets):
+            time.sleep(pause)  # Overpass fair use
+
+    kept = [l for l in leads if id(l) not in drop]
+    print(f"  -> {corrected} corrected, {flagged} flagged for manual check, {len(drop)} removed\n")
+    return kept, corrected, flagged
+
+
 def write_debug_log(records, path):
     """One JSON object per line: greppable, diffable, and safe to share.
 
@@ -574,6 +688,13 @@ def run(city, state, categories, debug_records=None):
         total = len(places)
         qualifying_count = 0
         unverified_count = 0
+        # Fetching one homepage per candidate is the slow part of a run (up to
+        # REQUEST_TIMEOUT each). Without per-business output the script looks
+        # hung for minutes, so report progress as each one resolves.
+        with_sites = sum(1 for p in places if p.get("websiteUri"))
+        print(f"  {total} results, {with_sites} list a website — checking each one now")
+        checked = 0
+        started = time.time()
 
         for p in places:
             name = p.get("displayName", {}).get("text", "")
@@ -598,6 +719,8 @@ def run(city, state, categories, debug_records=None):
             else:
                 analysis = analyze_website(website)
                 status = analysis["status"]
+                checked += 1
+                print(f"    [{checked}/{with_sites}] {progress_line(name, analysis)}", flush=True)
 
                 if status == "professional":
                     # Logged before discarding: a good site we wrongly rejected
@@ -678,7 +801,8 @@ def run(city, state, categories, debug_records=None):
 
         stats.append((category, total, qualifying_count, unverified_count))
         suffix = f", {unverified_count} could not be verified" if unverified_count else ""
-        print(f"  -> {total} results, {qualifying_count} qualifying leads{suffix}")
+        elapsed = time.time() - started
+        print(f"  -> {total} results, {qualifying_count} qualifying leads{suffix} ({elapsed:.0f}s)")
         time.sleep(1)
 
     return all_leads, unverified, stats
@@ -801,6 +925,13 @@ def main():
         "on my list?'. Needs no API key and costs nothing.",
     )
     parser.add_argument(
+        "--no-cross-check",
+        action="store_true",
+        help="Skip validating 'No Website' leads against OpenStreetMap. The check is "
+        "on by default because Google's website field is sometimes empty for a business "
+        "that has a real site; it costs nothing but adds a couple of seconds per such lead.",
+    )
+    parser.add_argument(
         "--debug-log",
         metavar="PATH",
         default=None,
@@ -838,6 +969,14 @@ def main():
 
     debug_records = [] if args.debug_log else None
     all_leads, unverified, stats = run(args.city, args.state, categories, debug_records)
+
+    # Validate before ranking, so a corrected lead is ranked on its real tier
+    # and a lead that turns out not to be one doesn't occupy a slot in the batch.
+    if not args.no_cross_check:
+        all_leads, _corrected, _flagged = cross_check_no_website(
+            all_leads, args.city, args.state
+        )
+
     kept, dropped = rank_and_trim(all_leads, args.limit)
     write_output(kept, unverified, stats, dropped, args.limit, output_path, args.city, args.state)
     if debug_records is not None:

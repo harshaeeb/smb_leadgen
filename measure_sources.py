@@ -118,9 +118,22 @@ def geocode_city(city, state, session):
     return float(hits[0]["lat"]), float(hits[0]["lon"])
 
 
-def osm_lookup(business_name, lat, lon, radius_m, overpass_url, session):
+def normalize_phone(value):
+    """Last 10 digits, so '(972) 203-6550' and '+1-972-203-6550' compare equal."""
+    digits = re.sub(r"\D", "", value or "")
+    return digits[-10:] if len(digits) >= 10 else ""
+
+
+def osm_lookup(business_name, lat, lon, radius_m, overpass_url, session, expected_phone=None):
     """Look one business up in OSM. Returns a result dict, never raises for
-    a miss -- a miss is data, not an error."""
+    a miss -- a miss is data, not an error.
+
+    When `expected_phone` is given, an entry whose phone matches is preferred
+    over any name-only match and comes back with phone_match=True. Callers
+    that act on the result (rather than just counting it) should require that
+    flag: name similarity alone pairs up different businesses, and in the
+    qualification pipeline a wrong pairing silently deletes a real lead.
+    """
     pattern = name_regex(business_name)
     if not pattern:
         return {"found": False, "note": "no distinctive words to match on"}
@@ -152,19 +165,26 @@ def osm_lookup(business_name, lat, lon, radius_m, overpass_url, session):
     if not elements:
         return {"found": False, "note": "no OSM entry matching that name nearby"}
 
-    # Prefer a match that actually carries a website over one that doesn't.
+    want_phone = normalize_phone(expected_phone)
     best = None
     for el in elements:
         tags = el.get("tags", {})
         site = next((tags[t] for t in OSM_WEBSITE_TAGS if tags.get(t)), None)
+        osm_phone = tags.get("phone") or tags.get("contact:phone")
+        phone_match = bool(want_phone) and normalize_phone(osm_phone) == want_phone
         candidate = {
             "found": True,
             "osm_name": tags.get("name", ""),
             "website": site,
-            "phone": tags.get("phone") or tags.get("contact:phone"),
+            "phone": osm_phone,
+            "phone_match": phone_match,
         }
-        if site:
+        # A phone match settles identity, so it wins outright.
+        if phone_match:
             return candidate
+        # Otherwise prefer an entry that at least carries a website.
+        if site and not (best and best.get("website")):
+            best = candidate
         best = best or candidate
     return best
 

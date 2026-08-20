@@ -185,6 +185,30 @@ detected, which issues fired, and the page's `<head>` (truncated). It
 contains no API key or credentials — just public website data — but it's
 plain text, so skim it before sending it anywhere.
 
+While it runs you'll see a line per website checked, so you can tell it's
+working rather than stuck:
+
+```
+Searching: plumber in Plano, TX
+  56 results, 48 list a website — checking each one now
+    [1/48] Baker Brothers Plumbing        ok — has a real site, skipping
+    [2/48] On Time Experts                LEAD (tier 2) — No HTTPS, Thin/minimal content
+    [3/48] ARS / Rescue Rooter            skipped — Blocked by bot protection (HTTP 403)
+  -> 56 results, 6 qualifying leads, 2 could not be verified (94s)
+
+Cross-checking 6 'No Website' lead(s) against OpenStreetMap...
+    [1/6] Sawyer Brothers Plumber's Ser…  OSM has https://sawyerbrothers… (phone match)
+        -> site is fine; removing, this was never a lead
+```
+
+That last step is a free second opinion on the weakest part of the data.
+Google's website field is sometimes just empty for a business that has a real
+site, so every "No Website" lead gets checked against OpenStreetMap before it
+reaches your call list. It only *changes* a lead when OSM's phone number
+matches exactly — otherwise it just adds a "verify before calling" note and
+leaves the lead alone, because a wrong guess there would quietly delete a
+real prospect. Turn it off with `--no-cross-check` if you're in a hurry.
+
 Each run prints per-category result counts to the terminal and writes a new
 `.xlsx` in the folder you run it from (unless you pass `--output`), named
 like:
